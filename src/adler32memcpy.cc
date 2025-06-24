@@ -437,7 +437,7 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
 
       // Loop over block count.
       "cmp " blocks_r ", #0;\n"   // Compare counter to zero.
-      "ble END;\n"
+      "ble 2f;\n"
 
 
       // Preload upcoming cacheline.
@@ -511,7 +511,7 @@ bool AdlerMemcpyAsm(uint64 *dstmem64, uint64 *srcmem64,
       "bgt TOP;\n"
 
 
-      "END:\n"
+      "2:\n"
       // Report checksum values A and B (both right now are two concatenated
       // 64 bit numbers and have to be converted to 64 bit numbers)
       // seems like Adler128 (since size of each part is 4 byte rather than

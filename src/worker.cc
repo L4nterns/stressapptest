@@ -38,11 +38,15 @@
 #include <sys/socket.h>
 #include <netdb.h>
 #include <arpa/inet.h>
+#ifdef STRESSAPPTEST_OS_LINUX
 #include <linux/unistd.h>  // for gettid
+#endif
 
 // For size of block device
 #include <sys/ioctl.h>
+#ifdef STRESSAPPTEST_OS_LINUX
 #include <linux/fs.h>
+#endif
 // For asynchronous I/O
 #ifdef HAVE_LIBAIO_H
 #include <libaio.h>
@@ -64,17 +68,34 @@
 #include "worker.h"      // NOLINT
 
 // Syscalls
+#ifdef STRESSAPPTEST_OS_LINUX
 // Why ubuntu, do you hate gettid so bad?
 #if !defined(__NR_gettid)
   #define __NR_gettid             224
 #endif
 
 #define gettid() syscall(__NR_gettid)
+#else
+// On macOS, use pthread_threadid_np as a substitute for gettid
+#include <pthread.h>
+static inline pid_t gettid() {
+  uint64_t tid;
+  pthread_threadid_np(NULL, &tid);
+  return (pid_t)tid;
+}
+
+// sched_getcpu is not available on macOS, provide a stub
+static inline int sched_getcpu() {
+  return 0;  // Return 0 as a fallback
+}
+#endif
+#ifdef STRESSAPPTEST_OS_LINUX
 #if !defined(CPU_SETSIZE)
 _syscall3(int, sched_getaffinity, pid_t, pid,
           unsigned int, len, cpu_set_t*, mask)
 _syscall3(int, sched_setaffinity, pid_t, pid,
           unsigned int, len, cpu_set_t*, mask)
+#endif
 #endif
 
 namespace {
@@ -2781,7 +2802,12 @@ bool DiskThread::SetParameters(int read_block_size,
 
 // Open a device, return false on failure.
 bool DiskThread::OpenDevice(int *pfile) {
+#ifdef STRESSAPPTEST_OS_LINUX
   int flags = O_RDWR | O_SYNC | O_LARGEFILE;
+#else
+  // O_LARGEFILE not needed on macOS (64-bit files are default)
+  int flags = O_RDWR | O_SYNC;
+#endif
   int fd = open(device_name_.c_str(), flags | O_DIRECT, 0);
   if (O_DIRECT != 0 && fd < 0 && errno == EINVAL) {
     fd = open(device_name_.c_str(), flags, 0);  // Try without O_DIRECT
@@ -2812,11 +2838,21 @@ bool DiskThread::GetDiskSize(int fd) {
   if (S_ISBLK(device_stat.st_mode)) {
     uint64 block_size = 0;
 
+#ifdef STRESSAPPTEST_OS_LINUX
     if (ioctl(fd, BLKGETSIZE64, &block_size) == -1) {
       logprintf(0, "Process Error: Unable to ioctl disk %s (thread %d).\n",
                 device_name_.c_str(), thread_num_);
       return false;
     }
+#else
+    // BLKGETSIZE64 not available on macOS, use fstat size instead
+    block_size = device_stat.st_size;
+    if (block_size == 0) {
+      logprintf(0, "Process Error: Unable to determine disk size %s (thread %d).\n",
+                device_name_.c_str(), thread_num_);
+      return false;
+    }
+#endif
 
     // Zero size indicates nonworking device..
     if (block_size == 0) {

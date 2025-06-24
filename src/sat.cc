@@ -1908,8 +1908,13 @@ bool Sat::Run() {
   sigaddset(&new_blocked_signals, SIGTERM);
   sigset_t prev_blocked_signals;
   pthread_sigmask(SIG_BLOCK, &new_blocked_signals, &prev_blocked_signals);
+#ifdef STRESSAPPTEST_OS_DARWIN
+  sig_t prev_sigint_handler = signal(SIGINT, SatHandleBreak);
+  sig_t prev_sigterm_handler = signal(SIGTERM, SatHandleBreak);
+#else
   sighandler_t prev_sigint_handler = signal(SIGINT, SatHandleBreak);
   sighandler_t prev_sigterm_handler = signal(SIGTERM, SatHandleBreak);
+#endif
 
   // Kick off all the worker threads.
   logprintf(12, "Log: Launching worker threads\n");

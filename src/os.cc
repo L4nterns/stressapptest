@@ -22,8 +22,14 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#ifdef STRESSAPPTEST_OS_LINUX
 #include <linux/types.h>
+#endif
+#ifdef STRESSAPPTEST_OS_DARWIN
+#include <malloc/malloc.h>
+#else
 #include <malloc.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,14 +37,21 @@
 #include <sys/ioctl.h>
 #include <sys/time.h>
 #include <sys/types.h>
+#ifdef STRESSAPPTEST_OS_LINUX
 #include <sys/ipc.h>
+#endif
 #ifdef HAVE_SYS_SHM_H
 #include <sys/shm.h>
 #endif
 #include <unistd.h>
 
+#ifdef STRESSAPPTEST_OS_LINUX
 #ifndef SHM_HUGETLB
 #define SHM_HUGETLB      04000  // remove when glibc defines it
+#endif
+#else
+// On non-Linux systems, define SHM_HUGETLB as 0 to disable hugepage support
+#define SHM_HUGETLB      0
 #endif
 
 #include <string>
@@ -140,6 +153,7 @@ int OsLayer::AddressMode() {
 
 // Translates user virtual to physical address.
 uint64 OsLayer::VirtualToPhysical(void *vaddr) {
+#ifdef STRESSAPPTEST_OS_LINUX
   uint64 frame, paddr, pfnmask, pagemask;
   int pagesize = sysconf(_SC_PAGESIZE);
   off_t off = ((uintptr_t)vaddr) / pagesize * 8;
@@ -176,6 +190,10 @@ uint64 OsLayer::VirtualToPhysical(void *vaddr) {
 
   paddr = ((frame & pfnmask) * pagesize) | ((uintptr_t)vaddr & pagemask);
   return paddr;
+#else
+  // Virtual to physical address translation not supported on non-Linux systems
+  return 0;
+#endif
 }
 
 // Returns the HD device that contains this file.
@@ -378,6 +396,7 @@ bool OsLayer::ErrorReport(const char *part, const char *symptom, int count) {
 
 // Read the number of hugepages out of the kernel interface in proc.
 int64 OsLayer::FindHugePages() {
+#ifdef STRESSAPPTEST_OS_LINUX
   char buf[65] = "0";
 
   // This is a kernel interface to query the numebr of hugepages
@@ -406,6 +425,10 @@ int64 OsLayer::FindHugePages() {
   int64 pages = strtoull(buf, NULL, 10);  // NOLINT
 
   return pages;
+#else
+  // Hugepages not supported on non-Linux systems
+  return 0;
+#endif
 }
 
 int64 OsLayer::FindFreeMemSize() {
@@ -415,7 +438,12 @@ int64 OsLayer::FindFreeMemSize() {
     return totalmemsize_;
 
   int64 pages = sysconf(_SC_PHYS_PAGES);
+#ifdef STRESSAPPTEST_OS_LINUX
   int64 avpages = sysconf(_SC_AVPHYS_PAGES);
+#else
+  // _SC_AVPHYS_PAGES not available on macOS, use _SC_PHYS_PAGES as fallback
+  int64 avpages = sysconf(_SC_PHYS_PAGES);
+#endif
   int64 pagesize = sysconf(_SC_PAGESIZE);
   int64 physsize = pages * pagesize;
   int64 avphyssize = avpages * pagesize;
@@ -609,9 +637,16 @@ bool OsLayer::AllocateTestMem(int64 length, uint64 paddr_base) {
         dynamic_mapped_shmem_ = true;
       } else {
         // Do a full mapping here otherwise.
+#ifdef STRESSAPPTEST_OS_LINUX
         shmaddr = mmap(NULL, length, PROT_READ | PROT_WRITE,
                        MAP_SHARED | MAP_NORESERVE | MAP_LOCKED | MAP_POPULATE,
                        shm_object, 0);
+#else
+        // MAP_LOCKED and MAP_POPULATE not available on macOS
+        shmaddr = mmap(NULL, length, PROT_READ | PROT_WRITE,
+                       MAP_SHARED | MAP_NORESERVE,
+                       shm_object, 0);
+#endif
         if (shmaddr == reinterpret_cast<void*>(-1)) {
           int err = errno;
           string errtxt = ErrorString(err);
@@ -651,8 +686,22 @@ bool OsLayer::AllocateTestMem(int64 length, uint64 paddr_base) {
       }
     }
     if (!mmapped_allocation_) {
-      // Use memalign to ensure that blocks are aligned enough for disk direct
+      // Use memalign/posix_memalign to ensure that blocks are aligned enough for disk direct
       // IO.
+#ifdef STRESSAPPTEST_OS_DARWIN
+      // macOS uses posix_memalign instead of memalign
+      void *aligned_buf = NULL;
+      if (posix_memalign(&aligned_buf, 4096, length) == 0) {
+        buf = static_cast<char*>(aligned_buf);
+        logprintf(0, "Log: Using posix_memaligned allocation at %p.\n", buf);
+      } else {
+        logprintf(0, "Process Error: posix_memalign failed\n");
+        if ((length >= 1499LL * kMegabyte) && (address_mode_ == 32)) {
+          logprintf(0, "Log: You are trying to allocate > 1.4G on a 32 "
+                       "bit process. Please setup shared memory.\n");
+        }
+      }
+#else
       buf = static_cast<char*>(memalign(4096, length));
       if (buf) {
         logprintf(0, "Log: Using memaligned allocation at %p.\n", buf);
@@ -663,6 +712,7 @@ bool OsLayer::AllocateTestMem(int64 length, uint64 paddr_base) {
                        "bit process. Please setup shared memory.\n");
         }
       }
+#endif
     }
   }
 
@@ -706,9 +756,16 @@ void *OsLayer::PrepareTestMem(uint64 offset, uint64 length) {
   if (dynamic_mapped_shmem_) {
     // TODO(nsanders): Check if we can support MAP_NONBLOCK,
     // and evaluate performance hit from not using it.
+#ifdef STRESSAPPTEST_OS_LINUX
     void * mapping = mmap(NULL, length, PROT_READ | PROT_WRITE,
                      MAP_SHARED | MAP_NORESERVE | MAP_LOCKED | MAP_POPULATE,
                      shmid_, offset);
+#else
+    // MAP_LOCKED and MAP_POPULATE not available on macOS
+    void * mapping = mmap(NULL, length, PROT_READ | PROT_WRITE,
+                     MAP_SHARED | MAP_NORESERVE,
+                     shmid_, offset);
+#endif
     if (mapping == MAP_FAILED) {
       string errtxt = ErrorString(errno);
       logprintf(0, "Process Error: PrepareTestMem mmap(%llx, %llx) failed. "

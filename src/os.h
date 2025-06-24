@@ -41,7 +41,11 @@
 #endif
 #endif
 
+#ifdef STRESSAPPTEST_OS_LINUX
 const char kPagemapPath[] = "/proc/self/pagemap";
+#else
+const char kPagemapPath[] = "";  // Not available on non-Linux systems
+#endif
 
 struct PCIDevice {
   int32 domain;
